@@ -1,3 +1,15 @@
+# Obsidian Auudio Alchemiser
+
+An experiment in converting Obsidian notes into audio players.
+
+![Screenshot 2023-11-14 23-18-30](https://github.com/bramses/obsidian-audio-alchemiser/assets/3282661/9974ddb8-8ab7-49ea-a95e-9b47115030a0)
+
+[CHECK EXAMPLE OUT HERE](https://bramses.notion.site/Obsidian-Audio-Player-Example-04fe272e142d4f5c9020881b3253913e?pvs=4)
+
+
+
+---
+
 # Obsidian Sample Plugin
 
 This is a sample plugin for Obsidian (https://obsidian.md).
