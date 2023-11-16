@@ -5,38 +5,58 @@ import {
 	Plugin,
 	PluginSettingTab,
 	Setting,
+	requestUrl,
 } from "obsidian";
-
-const basePath = (app.vault.adapter as any).basePath;
-
-import * as dotenv from "dotenv";
-dotenv.config({
-	path: `${basePath}/.obsidian/plugins/obsidian-audio-alchemiser/.env`,
-	debug: false,
-});
-
 import * as fs from "fs";
 import * as path from "path";
 import OpenAI from "openai";
+import * as dotenv from "dotenv";
+// import got from "got";
+
+const basePath = (app.vault.adapter as any).basePath;
+const PLUGIN_ID = "obsidian-audio-alchemiser";
+dotenv.config({
+	path: `${basePath}/.obsidian/plugins/${PLUGIN_ID}/.env`,
+	debug: false,
+});
 
 const openai = new OpenAI({
 	apiKey: process.env.OPENAI_API_KEY,
 	dangerouslyAllowBrowser: true,
 });
 
-const speechFile = path.resolve(basePath + "/speech.mp3");
-// Remember to rename these classes and interfaces!
-
 interface AudioAlchemiserSettings {
 	mySetting: string;
+	podcastMode: boolean;
+	audioPath: string;
+	alchemisedPath: string;
+	imagePath: string;
 }
 
 const DEFAULT_SETTINGS: AudioAlchemiserSettings = {
 	mySetting: "default",
+	podcastMode: false,
+	audioPath: basePath + "/audio",
+	alchemisedPath: basePath + "/alchemised",
+	imagePath: basePath + "/images",
 };
 
 export default class AudioAlchemiser extends Plugin {
 	settings: AudioAlchemiserSettings;
+
+	async saveImgFromUrl(url: string, filename: string) {
+		try {
+			const res = await requestUrl(url);
+			const buffer = res.arrayBuffer;
+			// save buffer to file
+			
+			fs.writeFileSync(filename, Buffer.from(buffer));
+			return filename;
+		} catch (err) {
+			console.error(err);
+			throw err;
+		}
+	}
 
 	async onload() {
 		await this.loadSettings();
@@ -64,44 +84,54 @@ export default class AudioAlchemiser extends Plugin {
 		// This adds an editor command that can perform some operation on the current editor instance
 		this.addCommand({
 			id: "sample-editor-command",
-			name: "Audio Alch",
+			name: "Alchemise",
 			editorCallback: async (editor: Editor, view: MarkdownView) => {
+				const datedAudioPath = `${
+					this.settings.audioPath
+				}/speech-${new Date().toISOString().replace(/:/g, "-")}.mp3`;
+				const speechFile = datedAudioPath;
+				// path.resolve(basePath + `/speech.mp3`);
+				const statusBarItemEl = this.addStatusBarItem();
+				statusBarItemEl.setText("Starting alchemisation...");
 				const selection = editor.getSelection();
+				let txtToSpeech = selection;
 
-				const podCompletion = await openai.chat.completions.create({
-					messages: [
-						{
-							role: "system",
-							content:
-								`Turn the following into a podcast like monologue format (just the host, no guests), very natural sounding. If you come across any code, just explain the code block, do not say any of the code itself. If there are any words that can't be spoken directly, conert them to phonetic sounding (e.g. dotenv == dot e en vee) Deliver the entire podcast in short narrative format. Just return the transcript, nothing else: ` +
-								selection,
-						},
-					],
-					model: "gpt-4",
-				});
+				if (this.settings.podcastMode) {
+					statusBarItemEl.setText("Generating podcast prompt...");
+					const podCompletion = await openai.chat.completions.create({
+						messages: [
+							{
+								role: "system",
+								content:
+									`Turn the following into a podcast like monologue format (just the host, no guests), very natural sounding. If you come across any code, just explain the code block, do not say any of the code itself. If there are any words that can't be spoken directly, convert them to phonetic sounding (e.g. dotenv == dot e en vee) Deliver the entire podcast in short narrative format. Just return the transcript, nothing else: ` +
+									selection,
+							},
+						],
+						model: "gpt-3.5-turbo",
+					});
 
-				const  promptPod = podCompletion.choices[0].message.content;
+					if (podCompletion.choices[0].message.content) {
+						txtToSpeech = podCompletion.choices[0].message.content;
+					}
 
-				if (!promptPod) {
-					return {
-						prompt: "Error generating prompt.",
-						imageUrl: "",
-					};
+					statusBarItemEl.setText(
+						"Podcast prompt generated. Generating audio..."
+					);
 				}
-
-				console.log(promptPod);
 
 				const mp3 = await openai.audio.speech.create({
 					model: "tts-1",
-					voice: "onyx",
-					input: promptPod,
+					voice: "echo", // todo add all voices
+					input: txtToSpeech,
 				});
 
-				console.log("mp3 created");
-			
+				statusBarItemEl.setText("Audio generated. Saving audio...");
 				const buffer = Buffer.from(await mp3.arrayBuffer());
 				await fs.promises.writeFile(speechFile, buffer);
 
+				statusBarItemEl.setText(
+					"Audio saved. Generating art prompt..."
+				);
 				const artMovements = [
 					"Abstract Expressionism",
 					"Art Deco",
@@ -186,25 +216,25 @@ export default class AudioAlchemiser extends Plugin {
 								selection,
 						},
 					],
-					model: "gpt-4",
+					model: "gpt-3.5-turbo",
 				});
 
-			
+				statusBarItemEl.setText(
+					"Art prompt generated. Generating art..."
+				);
 
 				let prompt = completion.choices[0].message.content;
 
-				console.log(prompt);
-
-				if(prompt) {
+				if (prompt) {
 					prompt = prompt.replace("Art Prompt: ", "").trim();
-	
+
 					if (prompt === "Error generating prompt.") {
 						return {
 							prompt: "Error generating prompt.",
 							imageUrl: "",
 						};
 					}
-	
+
 					const image = await openai.images.generate({
 						model: "dall-e-3",
 						prompt: prompt,
@@ -212,7 +242,9 @@ export default class AudioAlchemiser extends Plugin {
 					const imageUrl = image.data[0].url;
 
 					console.log(imageUrl);
-	
+
+					statusBarItemEl.setText("Art generated. Saving art...");
+
 					if (imageUrl === undefined) {
 						return {
 							prompt: "Error generating prompt.",
@@ -220,28 +252,46 @@ export default class AudioAlchemiser extends Plugin {
 						};
 					}
 
-					const summaryCompletion = await openai.chat.completions.create({
-						messages: [
-							{
-								role: "system",
-								content:
-									`Turn the following into a few word Markdown title. Just return the title, nothing else: ` +
-									selection,
-							},
-						],
-						model: "gpt-4",
-					});
+					// save art to file in images folder
+					const datedImagePath = `${
+						this.settings.imagePath
+						// YYYY-MM-DD-HH:mm:ss
+					}/image-${new Date().toISOString().replace(/:/g, "-")}.png`;
 
-					console.log(summaryCompletion);
-	
-					const  summaryTitle = summaryCompletion.choices[0].message.content;
+					await this.saveImgFromUrl(imageUrl, datedImagePath);
 
-					editor.replaceSelection(`![](${imageUrl})\n\n## ${summaryTitle?.trim().replace(/^"|"$/g, '')}\n\n![[speech.mp3]]`);
+					statusBarItemEl.setText(
+						"Art saved. Generating alchemised note..."
+					);
+
+					const summaryCompletion =
+						await openai.chat.completions.create({
+							messages: [
+								{
+									role: "system",
+									content:
+										`Turn the following into a few word Markdown title. Just return the title, nothing else: ` +
+										selection,
+								},
+							],
+							model: "gpt-3.5-turbo",
+						});
+
+					const summaryTitle =
+						summaryCompletion.choices[0].message.content;
+
+					statusBarItemEl.setText(
+						"Alchemised note generated. Saving alchemised note..."
+					);
+
+					editor.replaceSelection(
+						`![[${datedImagePath.replace(basePath, "")}]]\n\n## ${summaryTitle
+							?.trim()
+							.replace(/^"|"$/g, "")}\n\n![[${speechFile.replace(basePath, "")}]]`
+					);
+
+					statusBarItemEl.setText("");
 				}
-
-
-
-				
 			},
 		});
 		// This adds a complex command that can check whether the current state of the app allows execution of the command
@@ -291,6 +341,7 @@ export default class AudioAlchemiser extends Plugin {
 	}
 
 	async saveSettings() {
+		console.log("saving settings");
 		await this.saveData(this.settings);
 	}
 }
@@ -326,23 +377,52 @@ class SampleSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Podcast Mode")
-			.setDesc("It's a secret")
+			.setDesc(
+				"Should the model return audio word-for-word (false) or in a more natural podcast format (true)?"
+			)
 			.addToggle((toggle) =>
 				toggle
-					.setValue(this.plugin.settings.mySetting)
+					.setValue(this.plugin.settings.podcastMode)
 					.onChange(async (value) => {
-						this.plugin.settings.mySetting = value;
+						this.plugin.settings.podcastMode = value;
 						await this.plugin.saveSettings();
 					})
 			);
-			// .addText((text) =>
-			// 	text
-			// 		.setPlaceholder("Enter your secret")
-			// 		.setValue(this.plugin.settings.mySetting)
-			// 		.onChange(async (value) => {
-			// 			this.plugin.settings.mySetting = value;
-			// 			await this.plugin.saveSettings();
-			// 		})
-			// );
+
+		new Setting(containerEl)
+			.setName("Audio Path")
+			.setDesc("Path to save audio files")
+			.addText((text) =>
+				text
+					.setValue(this.plugin.settings.audioPath)
+					.onChange(async (value) => {
+						this.plugin.settings.audioPath = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Image Path")
+			.setDesc("Path to save image files")
+			.addText((text) =>
+				text
+					.setValue(this.plugin.settings.imagePath)
+					.onChange(async (value) => {
+						this.plugin.settings.imagePath = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Alchemised Path")
+			.setDesc("Path to save alchemised notes")
+			.addText((text) =>
+				text
+					.setValue(this.plugin.settings.alchemisedPath)
+					.onChange(async (value) => {
+						this.plugin.settings.alchemisedPath = value;
+						await this.plugin.saveSettings();
+					})
+			);
 	}
 }
